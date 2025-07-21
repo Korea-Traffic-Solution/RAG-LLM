@@ -1,0 +1,4 @@
+.env
+openai_key.txt
+__pycache__/
+Firebase/
