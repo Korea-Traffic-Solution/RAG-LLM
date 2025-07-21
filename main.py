@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Request, Form, HTTPException, Body
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +13,12 @@ from dotenv import load_dotenv
 
 # .env 파일에서 환경변수 로드
 load_dotenv()
+
+# Firestore 초기화
+import firebase_admin
+from firebase_admin import firestore
+import Firebase.firebase_config
+firestore_db = firestore.client()
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
@@ -52,6 +58,36 @@ rag_chain = (
     | prompt
     | llm
 )
+
+@app.post("/load-user-data")
+async def load_user_data(data: dict = Body(...)):
+    uid = data.get("uid")
+    if not uid:
+        raise HTTPException(status_code=400, detail="No uid")
+    doc = firestore_db.collection("Conclusion").document(uid).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="User not found")
+    user_data = doc.to_dict()
+    return {"user_data": user_data}
+
+class AskWithUid(BaseModel):
+    uid: str
+    question: str
+
+@app.post("/ask_with_uid")
+def ask_with_uid(query: AskWithUid):
+    try:
+        doc = firestore_db.collection("Conclusion").document(query.uid).get()
+        user_data = doc.to_dict() if doc.exists else {}
+
+        prompt_input = f"""
+        유저 정보: {user_data}
+        질문: {query.question}
+"""
+        answer = rag_chain.invoke(prompt_input)
+        return {"result": answer.content if hasattr(answer, "content") else str(answer)}
+    except Exception as e:
+        return {"result": f"서버 오류: {e}"}
 
 @app.get("/", response_class=HTMLResponse)
 async def form_get(request: Request, result: str = None, violation: str = None):
