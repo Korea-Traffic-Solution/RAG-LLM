@@ -1,6 +1,6 @@
 import os
 from fastapi import FastAPI, Request, Form, HTTPException, Body
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -22,6 +22,15 @@ firestore_db = firestore.client()
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+
+# CORS 허용
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 DB_FAISS_PATH = "./vectorstore/db_faiss"
 embeddings = OpenAIEmbeddings()
@@ -59,6 +68,44 @@ rag_chain = (
     | llm
 )
 
+# === 앱 전용 API ===
+class Query(BaseModel):
+    violation: str
+
+@app.post("/askApp")
+def ask_app(query: Query):
+    try:
+        answer = rag_chain.invoke(query.violation)
+        return JSONResponse(
+            content={"result": answer.content if hasattr(answer, "content") else str(answer)},
+            headers={"Content-Type": "application/json; charset=utf-8"}
+        )
+    except Exception as e:
+        return JSONResponse(
+            content={"result": f"서버 오류: {e}"},
+            headers={"Content-Type": "application/json; charset=utf-8"}
+        )
+
+# === 웹 전용 API ===
+class AskWeb(BaseModel):
+    uid: str
+    question: str
+
+@app.post("/askWeb")
+def ask_web(query: AskWeb):
+    try:
+        doc = firestore_db.collection("Conclusion").document(query.uid).get()
+        user_data = doc.to_dict() if doc.exists else {}
+        prompt_input = f"""
+        유저 정보: {user_data}
+        질문: {query.question}
+        """
+        answer = rag_chain.invoke(prompt_input)
+        return {"result": getattr(answer, "content", str(answer))}
+    except Exception as e:
+        return {"result": f"⚠️ 서버 오류: {e}"}
+
+# === 사용자 정보 로딩 ===
 @app.post("/load-user-data")
 async def load_user_data(data: dict = Body(...)):
     uid = data.get("uid")
@@ -70,54 +117,14 @@ async def load_user_data(data: dict = Body(...)):
     user_data = doc.to_dict()
     return {"user_data": user_data}
 
-class AskWithUid(BaseModel):
-    uid: str
-    question: str
-
-@app.post("/ask_with_uid")
-def ask_with_uid(query: AskWithUid):
-    try:
-        doc = firestore_db.collection("Conclusion").document(query.uid).get()
-        user_data = doc.to_dict() if doc.exists else {}
-
-        prompt_input = f"""
-        유저 정보: {user_data}
-        질문: {query.question}
-"""
-        answer = rag_chain.invoke(prompt_input)
-        return {"result": answer.content if hasattr(answer, "content") else str(answer)}
-    except Exception as e:
-        return {"result": f"서버 오류: {e}"}
-
+# === 웹용 폼 ===
 @app.get("/", response_class=HTMLResponse)
 async def form_get(request: Request, result: str = None, violation: str = None):
-    # GET 요청 시 result와 violation이 있으면 말풍선 표시, 없으면 빈 폼
     return templates.TemplateResponse("index.html", {"request": request, "result": result, "violation": violation})
 
 @app.post("/", response_class=HTMLResponse)
 async def form_post(request: Request, violation: str = Form(...)):
-    # POST 후 Redirect(쿼리파라미터로 답변과 질문 전달)
     answer = rag_chain.invoke(violation)
-    result = answer.content if hasattr(answer, "content") else str(answer)
+    result = getattr(answer, "content", str(answer))
     query_params = urlencode({"result": result, "violation": violation})
     return RedirectResponse(url=f"/?{query_params}", status_code=303)
-
-# 기존 /ask API도 유지
-class Query(BaseModel):
-    violation: str
-
-@app.post("/ask")
-def ask(query: Query):
-    try:
-        answer = rag_chain.invoke(query.violation)
-        return {"result": answer.content if hasattr(answer, "content") else str(answer)}
-    except Exception as e:
-        return {"result": f"서버 오류: {e}"}
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
