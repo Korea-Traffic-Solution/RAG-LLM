@@ -91,6 +91,14 @@ class AskWeb(BaseModel):
     uid: str
     question: str
 
+@app.post("/ask")
+def ask(query: AskWeb):
+    try:
+        answer = rag_chain.invoke(query.violation)
+        return {"result": answer.content if hasattr(answer, "content") else str(answer)}
+    except Exception as e:
+        return {"result": f"서버 오류: {e}"}
+
 @app.post("/askWeb")
 def ask_web(query: AskWeb):
     try:
